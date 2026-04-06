@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,23 +17,6 @@ MAX_POSTS_FOR_ANALYSIS = 40
 MAX_CHARS_PER_POST = 500
 MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 CONFIDENCE_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3}
-
-COMMON_SCHOOL_ABBREVIATIONS = {
-    "mcu": "銘傳大學",
-    "nttu": "國立臺東大學",
-    "ntu": "國立臺灣大學",
-    "nccu": "國立政治大學",
-    "nthu": "國立清華大學",
-    "nycu": "國立陽明交通大學",
-    "ncku": "國立成功大學",
-    "nsysu": "國立中山大學",
-    "fju": "輔仁大學",
-    "tku": "淡江大學",
-    "scu": "東吳大學",
-    "thu": "東海大學",
-    "cgu": "長庚大學",
-    "cmu": "中國醫藥大學",
-}
 
 ANALYSIS_SCHEMA: dict[str, Any] = {
     "name": "social_profile_analysis",
@@ -291,57 +273,8 @@ def _serialize_sources(scraped_sources: list[dict]) -> list[dict]:
     return serialized
 
 
-def _infer_birthday_from_digits(digits: str) -> str | None:
-    if len(digits) == 6:
-        year = 1911 + int(digits[:2])
-        month = int(digits[2:4])
-        day = int(digits[4:6])
-    elif len(digits) == 8:
-        year = int(digits[:4])
-        month = int(digits[4:6])
-        day = int(digits[6:8])
-    else:
-        return None
-
-    try:
-        inferred = date(year, month, day)
-    except ValueError:
-        return None
-
-    if inferred > date.today() or inferred.year < 1970:
-        return None
-
-    return inferred.isoformat()
-
-
-def _collect_derived_clues(username: str, sources: list[dict]) -> list[str]:
-    pool = [username]
-    for source in sources:
-        profile = source["profile"]
-        pool.extend([profile.get("username", ""), profile.get("bio", ""), profile.get("full_name", "")])
-
-    lower_pool = " ".join(pool).lower()
-    clues: list[str] = []
-
-    digit_matches = re.findall(r"(?<!\d)(\d{6}|\d{8})(?!\d)", lower_pool)
-    for digits in digit_matches[:3]:
-        iso = _infer_birthday_from_digits(digits)
-        if iso:
-            clues.append(
-                f"發現數字片段 {digits}，看起來像生日。若無衝突，可推測為 {iso}，"
-                "並進一步推算年齡與星座。"
-            )
-
-    for abbr, school_name in COMMON_SCHOOL_ABBREVIATIONS.items():
-        if re.search(rf"(?<![a-z]){abbr}(?![a-z])", lower_pool):
-            clues.append(f"發現常見學校縮寫 {abbr.upper()}，可能對應 {school_name}。")
-
-    return clues
-
-
-def _build_messages(username: str, scraped_sources: list[dict]) -> list[dict[str, str]]:
+def _build_initial_messages(username: str, scraped_sources: list[dict]) -> list[dict[str, str]]:
     serialized_sources = _serialize_sources(scraped_sources)
-    derived_clues = _collect_derived_clues(username, scraped_sources)
 
     instructions = """
 你是一位給社群用戶使用的平台分析助手。請根據提供的公開個人資料與貼文內容，用繁體中文做簡潔、可讀性高的使用者分析。
@@ -354,7 +287,7 @@ def _build_messages(username: str, scraped_sources: list[dict]) -> list[dict[str
 5. MBTI 一定要給最佳推測，並清楚說明原因與信心。
 6. personality.headline 請短一點，適合做結果頁標題。
 7. key_events 請只放明顯出現過的重要事、活動、旅行、比賽、合作、畢業、工作變動等；若不足可回空陣列。
-8. chat_topics 請給可以直接拿來聊天的主題，不要太空泛。
+8. chat_topics 請給 3 到 6 個可以直接拿來聊天的主題，只要資料中存在可聊線索，就不要留空。
 9. birthday.value 可保留原始推測寫法，例如 92/11/02；birthday.iso_date 盡量轉成西元 YYYY-MM-DD。
 10. 若已知生日，就應盡量補上年齡與星座。
 11. inferred_facts 一定要包含 age、birthday、height、location、school_or_company、zodiac 六個欄位。
@@ -367,7 +300,6 @@ def _build_messages(username: str, scraped_sources: list[dict]) -> list[dict[str
         "target_username": username,
         "today": datetime.now(timezone.utc).date().isoformat(),
         "sources": serialized_sources,
-        "derived_clues": derived_clues,
     }
 
     return [
@@ -382,58 +314,46 @@ def _build_messages(username: str, scraped_sources: list[dict]) -> list[dict[str
     ]
 
 
-def _build_json_object_messages(username: str, scraped_sources: list[dict]) -> list[dict[str, str]]:
-    messages = _build_messages(username, scraped_sources)
-    messages[-1]["content"] += (
-        "\n請只輸出單一 JSON object，不要加上 markdown code fence。"
-        "\n再次確認：所有頂層欄位與 inferred_facts 底下六個欄位都必須存在，"
-        "不確定就填 null 與 confidence=\"none\"。"
-    )
-    return messages
+def _build_review_messages(
+    username: str,
+    scraped_sources: list[dict],
+    draft_analysis_text: str,
+) -> list[dict[str, str]]:
+    serialized_sources = _serialize_sources(scraped_sources)
 
+    instructions = """
+你現在要複核並修正一份社群人物分析草稿。請以原始公開資料為唯一依據，重新產出最終版本。
 
-def _compute_age(iso_date: str) -> str | None:
-    try:
-        birth = datetime.strptime(iso_date, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+規則：
+1. 只能保留原始資料支持的內容，不要補寫沒有依據的敘述。
+2. 如果草稿遺漏了原始資料中已經很明顯的線索，請補上。
+3. chat_topics 只要原始資料裡存在興趣、事件、生活風格、喜歡的事物，就應該整理出 3 到 6 個自然、具體、可直接開聊的主題。
+4. inferred_facts 六個欄位都必須存在；若無法判斷就填 null 與 confidence="none"。
+5. birthday、age、zodiac、school_or_company、location 等欄位，只有在原始資料能支持時才可填入。
+6. key_events 只保留明確發生過的重要事或活動，不要塞太泛的描述。
+7. 回傳內容必須符合指定 JSON schema。
+""".strip()
 
-    today = datetime.now(timezone.utc).date()
-    age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
-    if age < 0 or age > 100:
-        return None
-    return str(age)
+    payload = {
+        "target_username": username,
+        "today": datetime.now(timezone.utc).date().isoformat(),
+        "sources": serialized_sources,
+        "draft_analysis": draft_analysis_text,
+    }
 
-
-def _compute_zodiac(iso_date: str) -> str | None:
-    try:
-        birth = datetime.strptime(iso_date, "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-    month_day = (birth.month, birth.day)
-    zodiac_ranges = [
-        ((1, 20), "摩羯座"),
-        ((2, 19), "水瓶座"),
-        ((3, 21), "雙魚座"),
-        ((4, 20), "牡羊座"),
-        ((5, 21), "金牛座"),
-        ((6, 22), "雙子座"),
-        ((7, 23), "巨蟹座"),
-        ((8, 23), "獅子座"),
-        ((9, 23), "處女座"),
-        ((10, 24), "天秤座"),
-        ((11, 23), "天蠍座"),
-        ((12, 22), "射手座"),
-        ((12, 32), "摩羯座"),
+    return [
+        {"role": "system", "content": instructions},
+        {
+            "role": "user",
+            "content": (
+                "以下是原始公開資料與先前草稿，請重新輸出最終 JSON。\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        },
     ]
-    for boundary, zodiac in zodiac_ranges:
-        if month_day < boundary:
-            return zodiac
-    return "摩羯座"
 
 
-def _backfill_inferred_facts(result: dict[str, Any]) -> dict[str, Any]:
+def _finalize_analysis_result(result: dict[str, Any]) -> dict[str, Any]:
     facts = result.get("inferred_facts", {})
     facts.setdefault("age", _default_fact())
     facts.setdefault("birthday", _default_birthday_fact())
@@ -441,31 +361,6 @@ def _backfill_inferred_facts(result: dict[str, Any]) -> dict[str, Any]:
     facts.setdefault("location", _default_fact())
     facts.setdefault("school_or_company", _default_fact())
     facts.setdefault("zodiac", _default_fact())
-    birthday = facts.get("birthday") or {}
-    iso_date = birthday.get("iso_date") or None
-
-    if not iso_date and birthday.get("value"):
-        digits = re.sub(r"\D", "", birthday["value"])
-        if len(digits) in {6, 8}:
-            iso_date = _infer_birthday_from_digits(digits)
-            if iso_date:
-                birthday["iso_date"] = iso_date
-    if iso_date:
-        birthday.setdefault("confidence", "low")
-        if not facts.get("age", {}).get("value"):
-            age = _compute_age(iso_date)
-            if age:
-                facts["age"]["value"] = age
-                facts["age"]["evidence"] = facts["age"].get("evidence") or "依生日推算"
-                if CONFIDENCE_ORDER.get(facts["age"].get("confidence", "none"), 0) < CONFIDENCE_ORDER["low"]:
-                    facts["age"]["confidence"] = "low"
-        if not facts.get("zodiac", {}).get("value"):
-            zodiac = _compute_zodiac(iso_date)
-            if zodiac:
-                facts["zodiac"]["value"] = zodiac
-                facts["zodiac"]["evidence"] = facts["zodiac"].get("evidence") or "依生日推算"
-                if CONFIDENCE_ORDER.get(facts["zodiac"].get("confidence", "none"), 0) < CONFIDENCE_ORDER["low"]:
-                    facts["zodiac"]["confidence"] = "low"
 
     result["inferred_facts"] = facts
     return result
@@ -502,7 +397,7 @@ def _parse_analysis_json(raw_text: str, source: str) -> dict[str, Any]:
         raise RuntimeError(f"{source} 回傳格式無法解析：{exc}") from exc
 
     normalized = _normalize_analysis_result(parsed)
-    return _backfill_inferred_facts(normalized)
+    return _finalize_analysis_result(normalized)
 
 
 async def analyze_social_profile(username: str, scraped_sources: list[dict]) -> dict[str, Any]:
@@ -515,12 +410,15 @@ async def analyze_social_profile(username: str, scraped_sources: list[dict]) -> 
         "Content-Type": "application/json",
     }
 
+    initial_result: dict[str, Any] | None = None
+    draft_text: str | None = None
+
     async with httpx.AsyncClient(timeout=90) as client:
         strict_response = await client.post(
             f"{GROQ_BASE_URL}/chat/completions",
             headers=headers,
             json=_build_payload(
-                _build_messages(username, scraped_sources),
+                _build_initial_messages(username, scraped_sources),
                 {
                     "type": "json_schema",
                     "json_schema": {
@@ -538,38 +436,54 @@ async def analyze_social_profile(username: str, scraped_sources: list[dict]) -> 
             strict_data = None
 
         if strict_response.status_code < 400:
-            return _parse_analysis_json(_extract_message_content(strict_data or {}), "Groq")
+            draft_text = _extract_message_content(strict_data or {})
+            initial_result = _parse_analysis_json(draft_text, "Groq")
+        else:
+            error_detail = strict_data if strict_data is not None else strict_response.text
+            error_payload = (strict_data or {}).get("error") if isinstance(strict_data, dict) else {}
 
-        error_detail = strict_data if strict_data is not None else strict_response.text
-        error_payload = (strict_data or {}).get("error") if isinstance(strict_data, dict) else {}
+            if error_payload.get("code") == "json_validate_failed":
+                draft_text = error_payload.get("failed_generation")
+                if draft_text:
+                    initial_result = _parse_analysis_json(draft_text, "Groq failed_generation")
+                else:
+                    raise RuntimeError(f"Groq 分析失敗：{error_detail}")
+            else:
+                raise RuntimeError(f"Groq 分析失敗：{error_detail}")
 
-        if error_payload.get("code") == "json_validate_failed":
-            failed_generation = error_payload.get("failed_generation")
+        review_response = await client.post(
+            f"{GROQ_BASE_URL}/chat/completions",
+            headers=headers,
+            json=_build_payload(
+                _build_review_messages(username, scraped_sources, draft_text or ""),
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": ANALYSIS_SCHEMA["name"],
+                        "schema": ANALYSIS_SCHEMA["schema"],
+                        "strict": True,
+                    },
+                },
+            ),
+        )
+
+        try:
+            review_data = review_response.json()
+        except Exception:
+            review_data = None
+
+        if review_response.status_code < 400:
+            return _parse_analysis_json(_extract_message_content(review_data or {}), "Groq review")
+
+        review_detail = review_data if review_data is not None else review_response.text
+        review_error_payload = (review_data or {}).get("error") if isinstance(review_data, dict) else {}
+
+        if review_error_payload.get("code") == "json_validate_failed":
+            failed_generation = review_error_payload.get("failed_generation")
             if failed_generation:
-                try:
-                    return _parse_analysis_json(failed_generation, "Groq failed_generation")
-                except RuntimeError:
-                    pass
+                return _parse_analysis_json(failed_generation, "Groq review failed_generation")
 
-            fallback_response = await client.post(
-                f"{GROQ_BASE_URL}/chat/completions",
-                headers=headers,
-                json=_build_payload(
-                    _build_json_object_messages(username, scraped_sources),
-                    {"type": "json_object"},
-                ),
-            )
-            if fallback_response.status_code >= 400:
-                try:
-                    fallback_detail = fallback_response.json()
-                except Exception:
-                    fallback_detail = fallback_response.text
-                raise RuntimeError(f"Groq 分析失敗：{fallback_detail}")
+        if initial_result is not None:
+            return initial_result
 
-            try:
-                fallback_data = fallback_response.json()
-            except Exception:
-                raise RuntimeError("Groq fallback 沒有回傳可解析的 JSON。")
-            return _parse_analysis_json(_extract_message_content(fallback_data), "Groq fallback")
-
-        raise RuntimeError(f"Groq 分析失敗：{error_detail}")
+        raise RuntimeError(f"Groq 分析失敗：{review_detail}")
