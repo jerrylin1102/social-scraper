@@ -1,7 +1,7 @@
 <template>
   <div class="min-h-screen bg-slate-50">
     <AppHeader />
-    <main class="max-w-6xl mx-auto px-4 py-8">
+    <main class="max-w-6xl mx-auto px-4 py-6 sm:py-8">
       <RouterView v-slot="{ Component }">
         <Transition name="fade" mode="out-in">
           <component :is="Component" />

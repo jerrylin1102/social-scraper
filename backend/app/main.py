@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-from .database import create_tables
 from .routers import scraper
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -21,11 +20,6 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(scraper.router, prefix="/api")
-
-
-@app.on_event("startup")
-async def startup_event():
-    create_tables()
 
 
 @app.get("/api/health")

@@ -1,31 +1,80 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import axios from 'axios'
+import { withBackendBase } from '@/utils/backend'
+import { normalizePlatforms } from '@/utils/analysis'
+
+const STORAGE_KEY = 'social-scraper-analyses-v1'
+const HISTORY_LIMIT = 8
+
+function loadAnalyses() {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function persistAnalyses(entries) {
+  if (typeof window === 'undefined') return
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
+}
+
+function buildQueryKey(username, platforms) {
+  return `${username.toLowerCase()}::${normalizePlatforms(platforms).sort().join('+')}`
+}
+
+function createId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return `analysis-${Date.now()}`
+}
 
 export const useScraperStore = defineStore('scraper', () => {
-  const profiles  = ref([])
-  const loading   = ref(false)
-  const error     = ref(null)
+  const analyses = ref(loadAnalyses())
+  const loading = ref(false)
+  const error = ref(null)
 
-  async function fetchProfiles() {
-    try {
-      const { data } = await axios.get('/api/profiles')
-      profiles.value = data
-    } catch (e) {
-      error.value = e.response?.data?.detail || '讀取失敗'
+  const recentAnalyses = computed(() =>
+    [...analyses.value].sort((a, b) => new Date(b.analyzed_at) - new Date(a.analyzed_at))
+  )
+
+  function upsertAnalysis(payload) {
+    const platforms = normalizePlatforms(payload.requested_platforms || [])
+    const queryKey = buildQueryKey(payload.username, platforms)
+    const existing = analyses.value.find(item => item.queryKey === queryKey)
+    const entry = {
+      ...payload,
+      id: existing?.id || createId(),
+      queryKey,
+      requested_platforms: platforms,
+      completed_platforms: normalizePlatforms(payload.completed_platforms || []),
+      failed_platforms: normalizePlatforms(payload.failed_platforms || []),
     }
+
+    analyses.value = [
+      entry,
+      ...analyses.value.filter(item => item.queryKey !== queryKey),
+    ].slice(0, HISTORY_LIMIT)
+    persistAnalyses(analyses.value)
+    return entry
   }
 
-  async function scrape(platform, username) {
+  async function analyze(username, platforms) {
     loading.value = true
-    error.value   = null
+    error.value = null
     try {
-      const { data } = await axios.post('/api/scrape', { platform, username }, { timeout: 120_000 })
-      // Refresh list
-      await fetchProfiles()
-      return data
+      const { data } = await axios.post(
+        withBackendBase('/api/analyze'),
+        { username, platforms: normalizePlatforms(platforms) },
+        { timeout: 240_000 },
+      )
+      return upsertAnalysis(data)
     } catch (e) {
-      const msg = e.response?.data?.detail || '爬取失敗，請稍後再試。'
+      const msg = e.response?.data?.detail || '分析失敗，請稍後再試。'
       error.value = msg
       throw new Error(msg)
     } finally {
@@ -33,17 +82,37 @@ export const useScraperStore = defineStore('scraper', () => {
     }
   }
 
-  async function getProfile(platform, username) {
-    const { data } = await axios.get(`/api/profiles/${platform}/${username}`)
-    return data
+  function getAnalysis(id) {
+    return analyses.value.find(item => item.id === id) || null
   }
 
-  async function deleteProfile(platform, username) {
-    await axios.delete(`/api/profiles/${platform}/${username}`)
-    profiles.value = profiles.value.filter(
-      p => !(p.platform === platform && p.username === username)
-    )
+  async function refreshAnalysis(id) {
+    const entry = getAnalysis(id)
+    if (!entry) {
+      throw new Error('找不到分析紀錄')
+    }
+    return analyze(entry.username, entry.requested_platforms)
   }
 
-  return { profiles, loading, error, fetchProfiles, scrape, getProfile, deleteProfile }
+  function deleteAnalysis(id) {
+    analyses.value = analyses.value.filter(item => item.id !== id)
+    persistAnalyses(analyses.value)
+  }
+
+  function clearAnalyses() {
+    analyses.value = []
+    persistAnalyses(analyses.value)
+  }
+
+  return {
+    analyses,
+    recentAnalyses,
+    loading,
+    error,
+    analyze,
+    getAnalysis,
+    refreshAnalysis,
+    deleteAnalysis,
+    clearAnalyses,
+  }
 })

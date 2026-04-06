@@ -19,11 +19,20 @@
   .card {
     @apply bg-white rounded-2xl border border-slate-100 shadow-sm;
   }
+  .chip {
+    @apply inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600;
+  }
+  .chip-soft {
+    @apply inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600;
+  }
   .badge-threads {
     @apply inline-flex items-center gap-1 px-2 py-0.5 bg-black text-white text-xs font-semibold rounded-full;
   }
   .badge-instagram {
     @apply inline-flex items-center gap-1 px-2 py-0.5 text-white text-xs font-semibold rounded-full
            bg-gradient-to-r from-purple-600 via-pink-500 to-orange-400;
+  }
+  .platform-pill {
+    @apply inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-medium transition-all duration-150;
   }
 }

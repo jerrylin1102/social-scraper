@@ -169,6 +169,7 @@ async def scrape_instagram(username: str) -> dict:
             unique.append(p)
 
     pic_url: str = profile_raw.pop("profile_pic_url", "") or ""
+    profile_raw["profile_pic_url"] = pic_url or None
     profile_raw["profile_pic_local"] = await _download_avatar(pic_url, username)
 
     return {"profile": profile_raw, "posts": unique}

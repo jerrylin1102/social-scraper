@@ -162,6 +162,7 @@ async def scrape_threads(username: str) -> dict:
             unique_posts.append(p)
 
     pic_url: str = profile_data.pop("profile_pic_url", "") or ""
+    profile_data["profile_pic_url"] = pic_url or None
     local_pic = await _download_avatar(pic_url, username)
     profile_data["profile_pic_local"] = local_pic
 
