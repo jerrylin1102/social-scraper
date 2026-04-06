@@ -181,6 +181,7 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useScraperStore } from '@/stores/scraper'
+import { parseSocialInput } from '@/utils/input'
 import {
   formatDate,
   getAvatar,
@@ -206,7 +207,8 @@ const selectedPlatforms = computed(() =>
   selectedPlatform.value === 'both' ? ['threads', 'instagram'] : [selectedPlatform.value]
 )
 
-const cleanedPreview = computed(() => username.value.trim().replace(/^@/, '') || 'username')
+const parsedInput = computed(() => parseSocialInput(username.value))
+const cleanedPreview = computed(() => parsedInput.value.username || 'username')
 
 function primarySource(item) {
   return getPrimarySource(item?.results || [])
@@ -215,8 +217,14 @@ function primarySource(item) {
 async function submit() {
   if (!username.value.trim() || store.loading) return
   try {
-    const entry = await store.analyze(username.value.trim(), selectedPlatforms.value)
+    const detectedPlatform = parsedInput.value.platform
+    const finalPlatforms = detectedPlatform ? [detectedPlatform] : selectedPlatforms.value
+    const finalUsername = parsedInput.value.username || username.value.trim()
+    const entry = await store.analyze(finalUsername, finalPlatforms)
     username.value = ''
+    if (detectedPlatform) {
+      selectedPlatform.value = detectedPlatform
+    }
     router.push({ name: 'analysis', params: { id: entry.id } })
   } catch {
     // Error state is already handled in the store.
