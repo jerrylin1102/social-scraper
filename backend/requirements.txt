@@ -1,0 +1,12 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+sqlalchemy>=2.0.0
+pydantic>=2.0.0
+httpx>=0.27.0
+curl-cffi>=0.7.0
+playwright>=1.44.0
+nested-lookup>=0.2.25
+jmespath>=1.0.1
+parsel>=1.9.0
+python-multipart>=0.0.9
+aiofiles>=23.2.1
