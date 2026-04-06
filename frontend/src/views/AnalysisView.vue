@@ -202,7 +202,7 @@
                   </svg>
                 </div>
                 <div>
-                  <h2 class="text-lg font-bold text-slate-900">聊天切入點</h2>
+                  <h2 class="text-lg font-bold text-slate-900">話題建議</h2>
                   <p class="text-xs font-medium text-slate-400">{{ chatTopics.length ? `${chatTopics.length} 個方向` : '尚在整理中' }}</p>
                 </div>
               </div>
